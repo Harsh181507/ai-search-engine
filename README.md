@@ -1,388 +1,257 @@
-# AI Search Engine
+<div align="center">
 
-A production-grade agentic retrieval system that combines vector search, BM25 keyword search, reciprocal rank fusion, cross-encoder reranking, and real-time LLM streaming to deliver accurate, context-grounded answers from document collections.
+# 🔎 NeuralSearch — Agentic AI Search Engine
 
-Built with FastAPI, Qdrant, Redis, Groq (Llama 3.3 70B), and a React + TypeScript frontend.
+**Hybrid retrieval (vector + BM25) · Reciprocal Rank Fusion · Cross-encoder reranking · Streaming LLM answers**
+
+Ask questions about your own documents and get grounded answers, with the sources they came from.
+
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.135-009688?logo=fastapi&logoColor=white)
+![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
+![Qdrant](https://img.shields.io/badge/Qdrant-Vector%20DB-DC244C)
+![Redis](https://img.shields.io/badge/Redis-Cache-DC382D?logo=redis&logoColor=white)
+![Groq](https://img.shields.io/badge/LLM-Llama%203.3%2070B%20(Groq)-F55036)
+
+</div>
 
 ---
 
 ## Table of Contents
 
-- [Architecture Overview](#architecture-overview)
-- [Search Pipeline](#search-pipeline)
+- [Overview](#overview)
 - [Features](#features)
-- [Technology Stack](#technology-stack)
-- [Project Structure](#project-structure)
-- [Setup and Installation](#setup-and-installation)
-- [Environment Variables](#environment-variables)
-- [Running the Application](#running-the-application)
-- [Docker Deployment](#docker-deployment)
+- [How It Works](#how-it-works)
+- [Tech Stack](#tech-stack)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Using the App](#using-the-app)
 - [API Reference](#api-reference)
-- [Evaluation Framework](#evaluation-framework)
+- [Evaluation](#evaluation)
 - [Testing](#testing)
+- [Project Structure](#project-structure)
+- [Design Decisions](#design-decisions)
+- [Roadmap](#roadmap)
 
 ---
 
-## Architecture Overview
+## Overview
 
-```
-Client Request
-      |
-      v
-+------------------+
-|   FastAPI Gateway |  (main.py)
-|   - Auth (API Key)|
-|   - Rate Limiting |
-|   - CORS          |
-+--------+---------+
-         |
-         v
-+------------------+     +-------------------+
-| Intent Router    |---->| Chat: return []   |
-| (router.py)      |---->| Keyword: BM25 only|
-+--------+---------+---->| Semantic: full    |
-         |                +-------------------+
-         v
-+------------------+
-| Agentic Planner  |  (query_planner.py + agentic_retrieval.py)
-| - Sub-queries    |
-| - Cross-workspace|
-+--------+---------+
-         |
-         v (per sub-query)
-+------------------+
-| Search Pipeline  |  (search.py)
-| 1. Rewrite query |  (query_rewriter.py)  --|
-| 2. Expand query  |  (query_expander.py)  --|--> Parallel via ThreadPoolExecutor
-| 3. Complexity    |  (query_complexity.py)
-| 4. Embed         |  (embedding.py — all-MiniLM-L6-v2)
-| 5. Vector search |  (vector_db.py — Qdrant)
-| 6. BM25 search   |  (keyword_search.py — rank-bm25)
-| 7. Rank fusion   |  (rank_fusion.py — RRF k=60)
-| 8. Deduplicate   |
-| 9. Rerank        |  (reranker.py — ms-marco-MiniLM-L-6-v2)
-+--------+---------+
-         |
-         v
-+------------------+
-| Answer Generator |  (answer_generator.py)
-| - Redis cache    |  (cache.py)
-| - Conv. history  |  (conversation.py)
-| - Groq streaming |  (llama-3.3-70b-versatile)
-| - Source attrib.  |
-+------------------+
-         |
-         v
-   Streamed Response
-```
+NeuralSearch is a full-stack **Retrieval-Augmented Generation (RAG)** system. You upload documents (`.txt`, `.pdf`, `.docx`) into isolated **workspaces**, then either:
 
----
+- **Search** — get the top 3 most relevant passages, ranked by a multi-stage hybrid pipeline, or
+- **Ask AI** — get a natural-language answer streamed token by token from Llama 3.3 70B, grounded in retrieved passages, with source attribution and multi-turn memory.
 
-## Search Pipeline
-
-The retrieval pipeline implements a multi-stage approach to maximize relevance:
-
-| Stage | Component | Description |
-|-------|-----------|-------------|
-| 1 | **Intent Routing** | Classifies queries as `chat` (skip retrieval), `keyword` (BM25 only), or `semantic` (full pipeline) |
-| 2 | **Query Rewriting** | LLM rewrites the query for better retrieval (Groq API) |
-| 3 | **Query Expansion** | LLM expands the query with related terms and synonyms (Groq API) |
-| 4 | **Parallel Execution** | Steps 2 and 3 run concurrently via `ThreadPoolExecutor`, reducing latency from ~1200ms to ~600ms |
-| 5 | **Query Complexity** | Rule-based classifier determines if the query is `simple` or `complex`, adjusting top-k and rerank candidate counts |
-| 6 | **Embedding** | The expanded query is embedded using `all-MiniLM-L6-v2` (384-dimensional vectors) |
-| 7 | **Vector Search** | Top-k nearest neighbors from Qdrant (cosine similarity, threshold 0.30) |
-| 8 | **Keyword Search** | BM25 lexical search over the same workspace (score threshold 0.50) |
-| 9 | **Reciprocal Rank Fusion** | Merges vector and keyword results using RRF (k=60) so documents appearing in both lists are boosted |
-| 10 | **Deduplication** | Removes duplicate chunks by (source, chunk_id) |
-| 11 | **Cross-Encoder Reranking** | `cross-encoder/ms-marco-MiniLM-L-6-v2` scores all (query, chunk) pairs and selects the top 3 |
+It ships with two demo workspaces (`got` — Game of Thrones, `dexter` — Dexter) and a 20-question ground-truth set for measuring retrieval and answer quality.
 
 ---
 
 ## Features
 
-### Hybrid Search
-- Combines dense vector retrieval (semantic understanding) with sparse BM25 retrieval (exact keyword matching)
-- Reciprocal rank fusion ensures documents relevant by either method are surfaced
-
-### Agentic Retrieval
-- Automatic sub-query decomposition: queries containing "and" are split into independent sub-queries
-- "Why" queries are augmented with "reason for" variants
-- Cross-workspace comparison queries are detected and routed to all non-default workspaces simultaneously
-
-### Dynamic Workspaces
-- Create and delete workspaces at runtime via the API
-- Each workspace maps to an independent Qdrant collection and BM25 index
-- Default workspaces (`default`, `got`, `dexter`) are protected from deletion
-- Workspace registry persisted in SQLite across server restarts
-
-### Multi-Turn Conversation Memory
-- Each browser session generates a unique conversation ID (UUID v4)
-- Conversation history is stored in SQLite and loaded into the LLM prompt
-- The LLM maintains context across follow-up questions within the same session
-
-### Real-Time LLM Streaming
-- Answers are streamed token-by-token from Groq (Llama 3.3 70B)
-- Graceful fallback: if the LLM is unavailable, raw retrieved chunks are returned
-- Source attribution appended to every response
-
-### Redis Caching
-- Completed answers are cached in Redis with a 1-hour TTL
-- Subsequent identical queries return instantly from cache
-
-### Document Ingestion
-- Supports `.txt`, `.pdf`, and `.docx` file formats
-- Semantic chunking with 3-sentence windows and 1-sentence overlap
-- Each chunk is embedded and stored in Qdrant with full metadata
-- Document sources are registered in SQLite for keyword search discovery
-
-### Observability
-- Structured logging with `logging` module throughout all services
-- Query latency tracking and cache hit rate metrics
-- Query logs persisted to SQLite with timestamps, results, and workspace context
-
-### Security
-- API key authentication via `X-API-Key` header on all mutating endpoints
-- Rate limiting at 30 requests/minute per IP address (SlowAPI)
-- CORS configured for frontend origin
+| | |
+|---|---|
+| 🧬 **Hybrid search** | Dense vectors (`all-MiniLM-L6-v2`) + sparse BM25, fused with Reciprocal Rank Fusion |
+| 🎯 **Cross-encoder reranking** | `ms-marco-MiniLM-L-6-v2` rescores candidates and keeps the best 3 |
+| 🤖 **Agentic retrieval** | Splits compound questions into sub-queries; routes comparison questions across workspaces |
+| 🧭 **Intent routing** | Small talk skips retrieval, entity lookups use BM25 only, everything else gets the full pipeline |
+| ✍️ **Query rewriting & expansion** | Two LLM calls run in parallel to sharpen the query and add synonyms |
+| ⚡ **Streaming answers** | Token-by-token responses from Groq, with a graceful fallback to raw passages if the LLM fails |
+| 💬 **Conversation memory** | Per-session history (last 6 turns) stored in SQLite and fed back to the LLM |
+| 🗂️ **Dynamic workspaces** | Create/delete workspaces at runtime; each one is its own Qdrant collection |
+| 🚀 **Redis caching** | Answers cached for 1 hour; repeated questions return instantly |
+| 📊 **Observability** | Latency and cache-hit metrics, plus every query logged to SQLite |
+| 🔐 **Security** | API-key auth on all mutating/retrieval endpoints, per-IP rate limiting on `/ask`, CORS |
 
 ---
 
-## Technology Stack
+## How It Works
 
-| Layer | Technology | Purpose |
-|-------|-----------|---------|
-| **API Framework** | FastAPI 0.135 | HTTP server, request validation, OpenAPI docs |
-| **Vector Database** | Qdrant (local/Docker) | Dense vector storage and similarity search |
-| **Cache** | Redis | Response caching (1-hour TTL) |
-| **Relational DB** | SQLite | Query logs, conversations, workspace registry, document sources |
-| **Embedding Model** | `all-MiniLM-L6-v2` | 384-dimensional sentence embeddings (sentence-transformers) |
-| **Reranker** | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder reranking of candidate documents |
-| **LLM** | Llama 3.3 70B via Groq API | Answer generation with streaming |
-| **Keyword Search** | rank-bm25 | BM25Okapi implementation for lexical retrieval |
-| **Frontend** | React 18 + TypeScript + Vite | Single-page application with tabs for all operations |
-| **Containerization** | Docker + Docker Compose | Multi-service deployment (backend, Redis, Qdrant) |
-| **Testing** | pytest + FastAPI TestClient | API endpoint integration tests |
-
----
-
-## Project Structure
-
-```
-ai-search-engine/
-|
-|-- backend/
-|   |-- main.py                    # FastAPI application, routes, middleware, lifespan
-|   |-- services/
-|       |-- search.py              # Master search orchestrator with parallel LLM calls
-|       |-- agentic_retrieval.py   # Sub-query planning and multi-workspace execution
-|       |-- query_planner.py       # Comparison vs single query routing
-|       |-- query_rewriter.py      # LLM-based query rewriting (Groq)
-|       |-- query_expander.py      # LLM-based query expansion (Groq)
-|       |-- query_complexity.py    # Rule-based complexity classifier
-|       |-- router.py              # Intent detection (chat/keyword/semantic)
-|       |-- embedding.py           # Sentence embedding (all-MiniLM-L6-v2)
-|       |-- vector_db.py           # Qdrant collection and search operations
-|       |-- keyword_search.py      # BM25 index management and search
-|       |-- rank_fusion.py         # Reciprocal rank fusion (RRF)
-|       |-- reranker.py            # Cross-encoder reranking
-|       |-- answer_generator.py    # Groq LLM streaming with fallback
-|       |-- cache.py               # Redis get/set with TTL
-|       |-- conversation.py        # Multi-turn history load/store
-|       |-- document_processor.py  # File extraction, chunking, embedding, indexing
-|       |-- chunking.py            # Semantic sentence-window chunking
-|       |-- logger.py              # SQLite: query logs, conversations, workspaces
-|       |-- metrics.py             # In-memory query performance counters
-|
-|-- frontend/
-|   |-- src/pages/Index.tsx        # Main UI: Search, Ask AI, Upload, Workspaces, Metrics
-|   |-- index.html                 # Entry point
-|   |-- vite.config.ts             # Vite build configuration
-|
-|-- scripts/
-|   |-- index_documents.py         # Batch document indexing from a folder
-|   |-- ingest_data.py             # Data ingestion utility
-|   |-- evaluate_retrieval.py      # Recall@k, MRR evaluation against ground truth
-|   |-- evaluate_answers.py        # LLM answer hit rate and faithfulness evaluation
-|   |-- evaluate_live_retrieval.py # Live retrieval testing
-|
-|-- tests/
-|   |-- test_api.py                # pytest: health, auth, search, workspace, logs
-|
-|-- data/
-|   |-- evaluation.json            # 20 ground-truth test cases (10 GoT + 10 Dexter)
-|   |-- got.txt                    # Game of Thrones source document
-|   |-- dexter.txt                 # Dexter source document
-|   |-- qdrant/                    # Qdrant persistent storage
-|   |-- query_logs.db              # SQLite database
-|
-|-- docker/                        # Docker-related configuration
-|-- Dockerfile                     # Python 3.11.9 backend image
-|-- docker-compose.yml             # Redis + Qdrant + backend orchestration
-|-- requirements.txt               # Python dependencies
-|-- .env                           # Environment variables (not committed)
+```mermaid
+flowchart TD
+    Q[User query] --> R{Intent router}
+    R -- chat --> LLM
+    R -- keyword --> BM25only[BM25 search] --> LLM
+    R -- semantic --> P[Agentic planner<br/>sub-queries · cross-workspace]
+    P --> RW[Rewrite query] & EX[Expand query]
+    RW & EX --> C[Complexity check<br/>simple: top-8 · complex: top-20]
+    C --> V[Vector search<br/>Qdrant · cosine ≥ 0.30]
+    C --> K[BM25 search<br/>rank-bm25]
+    V & K --> F[Reciprocal Rank Fusion<br/>k = 60]
+    F --> D[Deduplicate by source + chunk]
+    D --> X[Cross-encoder rerank<br/>keep top 3]
+    X --> LLM[Answer generator<br/>Redis cache · history · Groq stream]
+    LLM --> A[Streamed answer + sources]
 ```
 
+| Stage | Module | What it does |
+|---|---|---|
+| Intent routing | `router.py` | Classifies the query as `chat`, `keyword` or `semantic` |
+| Planning | `query_planner.py`, `agentic_retrieval.py` | Splits on "and", adds "reason for" variants to *why* questions, detects cross-workspace comparisons |
+| Rewrite + expand | `query_rewriter.py`, `query_expander.py` | Run concurrently in a `ThreadPoolExecutor` (~1200 ms → ~600 ms) |
+| Complexity | `query_complexity.py` | Rule-based; picks retrieval depth and rerank-candidate count |
+| Embed | `embedding.py` | 384-dim sentence embeddings |
+| Retrieve | `vector_db.py`, `keyword_search.py` | Dense + sparse retrieval within the workspace |
+| Fuse | `rank_fusion.py` | RRF so passages found by both methods rise to the top |
+| Rerank | `reranker.py` | Joint (query, passage) scoring for precise ordering |
+| Generate | `answer_generator.py` | Cached, history-aware, streaming generation with source attribution |
+
+**Ingestion:** uploaded files are text-extracted, split into 3-sentence windows with 1-sentence overlap, embedded, stored in Qdrant with metadata, and the BM25 index is rebuilt.
+
 ---
 
-## Setup and Installation
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| API | FastAPI, Uvicorn, Pydantic, SlowAPI |
+| Vector store | Qdrant (embedded file mode by default, or server mode) |
+| Keyword search | rank-bm25 (BM25Okapi) |
+| Models | sentence-transformers: `all-MiniLM-L6-v2`, `cross-encoder/ms-marco-MiniLM-L-6-v2` |
+| LLM | Llama 3.3 70B Versatile via the Groq API |
+| Cache | Redis |
+| Persistence | SQLite (workspaces, document sources, conversations, query logs) |
+| Frontend | React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui |
+| Tooling | Docker Compose, pytest, Vitest, Playwright |
+
+---
+
+## Quick Start
 
 ### Prerequisites
 
-- Python 3.11 or higher
-- Node.js 18 or higher (for the frontend)
-- Redis server (local or Docker)
-- Groq API key ([console.groq.com](https://console.groq.com))
+- **Python 3.11+**
+- **Node.js 18+**
+- **Docker** (for Redis), or a local Redis server
+- A free **Groq API key** from [console.groq.com](https://console.groq.com)
 
-### Backend Setup
+### 1. Clone
 
 ```bash
-# Clone the repository
-git clone <repository-url>
+git clone https://github.com/Harsh181507/ai-search-engine.git
 cd ai-search-engine
+```
 
-# Create and activate virtual environment
+### 2. Backend
+
+```bash
 python -m venv venv
-venv\Scripts\activate        # Windows
-# source venv/bin/activate   # macOS/Linux
+venv\Scripts\activate            # Windows
+# source venv/bin/activate       # macOS / Linux
 
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-### Frontend Setup
+> The first run downloads the embedding and reranker models (~100 MB) from Hugging Face.
 
-```bash
-cd frontend
-npm install
-```
+### 3. Environment
 
-### Initial Data Indexing
-
-Before searching, documents must be indexed into Qdrant:
-
-```bash
-# Index documents from the data/ folder
-python scripts/index_documents.py data/
-
-# Or use the ingest script
-python scripts/ingest_data.py
-```
-
-Alternatively, upload documents through the frontend Upload tab or the `POST /upload` endpoint after the server is running.
-
----
-
-## Environment Variables
-
-Create a `.env` file in the project root:
+Create a `.env` file in the project root (see [Configuration](#configuration)):
 
 ```env
-GROQ_API_KEY=your_groq_api_key_here
-API_KEY=your_api_key_here
-REDIS_HOST=localhost
-FRONTEND_ORIGIN=http://localhost:8080
+GROQ_API_KEY=your_groq_api_key
+API_KEY=choose_a_secret_key
 ```
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `GROQ_API_KEY` | Yes | API key for Groq LLM service (query rewriting, expansion, answer generation) |
-| `API_KEY` | Yes | API key clients must send in the `X-API-Key` header |
-| `REDIS_HOST` | No | Redis hostname (default: `localhost`) |
-| `FRONTEND_ORIGIN` | No | Allowed CORS origin (default: `http://localhost:8080`) |
-
-For the frontend, set `VITE_API_KEY` in `frontend/.env`:
-
-```env
-VITE_API_KEY=your_api_key_here
-```
-
----
-
-## Running the Application
-
-### Start Redis
+### 4. Redis
 
 ```bash
-# Using Docker
-docker run -d -p 6379:6379 redis
-
-# Or install locally and run
-redis-server
+docker compose up -d redis
 ```
 
-### Start the Backend
+### 5. Run the backend
 
 ```bash
 uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
-The API documentation is available at `http://localhost:8000/docs` (Swagger UI).
+Interactive API docs: **http://localhost:8000/docs**
 
-### Start the Frontend
+### 6. Run the frontend
 
 ```bash
 cd frontend
+npm install
+echo VITE_API_KEY=choose_a_secret_key > .env   # must match API_KEY above
 npm run dev
 ```
 
-The frontend runs at `http://localhost:8080` by default.
+Open **http://localhost:8080** 🎉
 
 ---
 
-## Docker Deployment
+## Configuration
 
-The included `docker-compose.yml` orchestrates all three services:
+### Backend — `.env` (project root)
 
-```bash
-docker-compose up --build
-```
+| Variable | Required | Default | Description |
+|---|:---:|---|---|
+| `GROQ_API_KEY` | ✅ | — | Groq key used for rewriting, expansion and answer generation |
+| `API_KEY` | ✅ | — | Secret clients must send in the `X-API-Key` header |
+| `REDIS_HOST` | | `localhost` | Redis host (port 6379) |
+| `FRONTEND_ORIGIN` | | `http://localhost:8080` | Allowed CORS origin |
+| `QDRANT_MODE` | | `file` | `file` = embedded storage on disk, `server` = connect to a Qdrant server |
+| `QDRANT_FILE_PATH` | | `data/qdrant` | Storage path in `file` mode |
+| `QDRANT_HOST` / `QDRANT_PORT` | | `localhost` / `6333` | Server address in `server` mode |
 
-This starts:
+### Frontend — `frontend/.env`
 
-| Service | Port | Description |
-|---------|------|-------------|
-| `backend` | 8000 | FastAPI application |
-| `redis` | 6379 | Response cache |
-| `qdrant` | 6333 | Vector database with persistent storage at `./data/qdrant` |
+| Variable | Description |
+|---|---|
+| `VITE_API_KEY` | Must match the backend `API_KEY` |
+
+---
+
+## Using the App
+
+The UI has five tabs:
+
+1. **Search** — enter a query, pick a workspace, and see the top passages with their rerank scores and sources.
+2. **Ask AI** — chat with your documents. Answers stream in live and follow-up questions keep context.
+3. **Upload** — add `.txt`, `.pdf` or `.docx` files to a workspace; they're chunked and indexed immediately.
+4. **Workspaces** — create or delete workspaces (`default`, `got` and `dexter` are protected).
+5. **Metrics** — total queries, average latency and cache hit rate.
 
 ---
 
 ## API Reference
 
-All mutating endpoints require the `X-API-Key` header.
-
-### System
+Send `X-API-Key: <API_KEY>` on every endpoint marked 🔐.
 
 | Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| `GET` | `/health` | No | Health check |
-| `GET` | `/metrics` | No | Query performance metrics (total queries, avg latency, cache hit rate) |
-| `GET` | `/logs` | Yes | 20 most recent query log entries |
+|---|---|:---:|---|
+| `GET` | `/health` | | Health check |
+| `GET` | `/metrics` | | Query count, average latency, cache hit rate |
+| `GET` | `/logs` | 🔐 | 20 most recent query logs |
+| `GET` | `/workspaces` | | List workspaces |
+| `POST` | `/workspaces` | 🔐 | Create a workspace — body `{"name": "my-docs", "description": "..."}` |
+| `DELETE` | `/workspaces/{name}` | 🔐 | Delete a workspace and its vectors |
+| `POST` | `/search` | 🔐 | Hybrid search — body `{"query": "...", "workspace": "got", "source": null}` |
+| `GET` | `/ask` | 🔐 | Streamed answer — params `query`, `workspace`, `conversation_id` (30 req/min per IP) |
+| `POST` | `/upload` | 🔐 | Upload and index a file — param `workspace`, multipart field `file` |
 
-### Workspaces
+Workspace names: lowercase letters, digits and hyphens, 1–50 characters, starting and ending with a letter or digit.
 
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| `GET` | `/workspaces` | No | List all registered workspaces |
-| `POST` | `/workspaces` | Yes | Create a new workspace (name: lowercase, digits, hyphens, 1-50 chars) |
-| `DELETE` | `/workspaces/{name}` | Yes | Delete a workspace and its Qdrant collection (defaults are protected) |
+<details>
+<summary><b>Examples</b></summary>
 
-### Retrieval
+```bash
+# Search
+curl -X POST http://localhost:8000/search \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"query": "Who killed Ned Stark?", "workspace": "got"}'
 
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| `POST` | `/search` | Yes | Hybrid search with reranking. Body: `{"query": "...", "workspace": "...", "source": null}` |
-| `GET` | `/ask` | Yes | Agentic retrieval + streaming LLM answer. Params: `query`, `workspace`, `conversation_id` |
+# Ask (streamed)
+curl -N "http://localhost:8000/ask?query=Why%20did%20Dexter%20kill&workspace=dexter&conversation_id=demo" \
+  -H "X-API-Key: $API_KEY"
 
-### Ingestion
+# Upload
+curl -X POST "http://localhost:8000/upload?workspace=default" \
+  -H "X-API-Key: $API_KEY" -F "file=@notes.pdf"
+```
 
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| `POST` | `/upload` | Yes | Upload and index a document (.txt, .pdf, .docx). Params: `workspace`. Body: multipart file |
+`POST /search` response:
 
-### Response Formats
-
-**POST /search** response:
 ```json
 {
   "query": "Who killed Ned Stark?",
@@ -398,79 +267,104 @@ All mutating endpoints require the `X-API-Key` header.
 }
 ```
 
-**GET /ask** response: Streamed plain text with source attribution appended at the end.
+</details>
 
 ---
 
-## Evaluation Framework
+## Evaluation
 
-The project includes two evaluation scripts that measure retrieval and answer quality against a ground-truth dataset of 20 test cases (`data/evaluation.json`).
+`data/evaluation.json` holds 20 ground-truth questions (10 Game of Thrones, 10 Dexter).
 
-### Retrieval Evaluation
-
-Measures whether the correct document chunk is retrieved in the top-k results.
+**Retrieval quality** — Recall@k, MRR, per-query-type breakdown and latency:
 
 ```bash
 python scripts/evaluate_retrieval.py --workspace got
 python scripts/evaluate_retrieval.py --workspace dexter --top_k 5
 ```
 
-**Metrics computed:**
-- **Recall@k**: Fraction of queries where the expected chunk was found in the top-k results
-- **MRR (Mean Reciprocal Rank)**: Average of `1/rank` for each query (1.0 = always at rank 1)
-- **Per-query-type breakdown**: Separate metrics for factoid, reasoning, and event queries
-- **Latency statistics**: Average, minimum, and maximum per-query latency
-
-Results are saved to `data/eval_results_{workspace}.json`.
-
-### Answer Evaluation
-
-Measures whether the LLM-generated answer contains the expected information. Requires the server to be running.
+**Answer quality** — hit rate, faithfulness and average length (the backend must be running):
 
 ```bash
 python scripts/evaluate_answers.py --workspace got
 python scripts/evaluate_answers.py --workspace dexter --base_url http://localhost:8000
 ```
 
-**Metrics computed:**
-- **Answer Hit Rate**: Fraction of answers containing the expected text
-- **Faithfulness Rate**: Fraction of answers that appear to use the retrieved context (not refusing or hallucinating)
-- **Average Answer Length**: Mean character count of generated answers
-
-Results are saved to `data/answer_eval_{workspace}.json`.
+Results are written to `data/eval_results_<workspace>.json` and `data/answer_eval_<workspace>.json`.
 
 ---
 
 ## Testing
 
-Run the test suite with pytest:
-
 ```bash
+# Backend API tests (health, auth, search shape, workspace isolation, logs)
 pytest tests/ -v
-```
 
-**Test coverage includes:**
-- Health check endpoint
-- Workspace listing (verifies default workspaces present)
-- Authentication enforcement (missing key, wrong key)
-- Search response shape and structure validation
-- Workspace isolation (Dexter queries only return Dexter sources)
-- Query log retrieval
+# Frontend unit tests
+cd frontend && npm test
+```
 
 ---
 
-## Key Design Decisions
+## Project Structure
 
-1. **Hybrid search over vector-only**: Pure vector search misses exact keyword matches. BM25 complements semantic search for queries with specific names or terms.
+```
+ai-search-engine/
+├── backend/
+│   ├── main.py                    # FastAPI app: routes, auth, rate limiting, CORS, startup
+│   └── services/
+│       ├── search.py              # Retrieval orchestrator
+│       ├── agentic_retrieval.py   # Sub-query + multi-workspace execution
+│       ├── query_planner.py       # Single vs comparison routing
+│       ├── query_rewriter.py      # LLM query rewriting
+│       ├── query_expander.py      # LLM query expansion
+│       ├── query_complexity.py    # Simple/complex classifier
+│       ├── router.py              # chat / keyword / semantic intent
+│       ├── embedding.py           # Sentence embeddings
+│       ├── vector_db.py           # Qdrant collections + search
+│       ├── keyword_search.py      # BM25 index + search
+│       ├── rank_fusion.py         # Reciprocal Rank Fusion
+│       ├── reranker.py            # Cross-encoder reranking
+│       ├── answer_generator.py    # Streaming Groq generation + fallback
+│       ├── cache.py               # Redis cache
+│       ├── conversation.py        # Multi-turn history
+│       ├── document_processor.py  # Extract → chunk → embed → index
+│       ├── chunking.py            # Sentence-window chunking
+│       ├── logger.py              # SQLite persistence
+│       └── metrics.py             # In-memory counters
+├── frontend/                      # React + TypeScript + Vite UI
+│   └── src/pages/Index.tsx        # Search · Ask AI · Upload · Workspaces · Metrics
+├── scripts/                       # Indexing and evaluation utilities
+├── tests/test_api.py              # pytest API tests
+├── data/                          # Demo corpora + evaluation set
+├── docker-compose.yml             # Redis + Qdrant services
+├── Dockerfile                     # Backend image (Python 3.11)
+└── requirements.txt
+```
 
-2. **ThreadPoolExecutor for parallel LLM calls**: Query rewriting and expansion are I/O-bound (waiting for Groq API responses). Running them concurrently halves the preprocessing latency without requiring an async rewrite.
+---
 
-3. **Cross-encoder reranking as final stage**: Bi-encoder retrieval is fast but approximate. The cross-encoder jointly scores each (query, document) pair for precise relevance ranking at the cost of being slower — applied only to the top candidates.
+## Design Decisions
 
-4. **Reciprocal Rank Fusion (k=60)**: RRF is parameter-light and robust. Documents appearing in both vector and keyword results receive boosted scores, surfacing the most comprehensively relevant results.
+- **Hybrid over vector-only.** Embeddings capture meaning but miss exact names; BM25 catches them. RRF combines both without tuning weights.
+- **Rerank last.** Bi-encoders are fast but approximate; the cross-encoder is precise but slow, so it only sees a small candidate set.
+- **Parallel LLM preprocessing.** Rewriting and expansion are I/O-bound, so threads halve the wait without an async rewrite.
+- **Route before retrieving.** Greetings don't need a vector search, and known entity names do better with BM25 alone.
+- **SQLite for state.** Workspaces, sources, history and logs survive restarts without running another database.
+- **Fail soft.** If Groq is down, users still get the retrieved passages instead of an error.
 
-5. **SQLite for workspace and document registry**: Lightweight, zero-configuration persistence. Workspace membership and document source tracking survive server restarts without requiring a separate database service.
+---
 
-6. **Streaming responses**: Token-by-token streaming provides immediate user feedback. The frontend renders the answer progressively as it arrives.
+## Roadmap
 
-7. **Graceful LLM fallback**: If the Groq API is unreachable or returns an error, the system returns the raw retrieved chunks instead of failing entirely.
+- [ ] Run the backend as a service in `docker-compose.yml`
+- [ ] Move the frontend API base URL into an environment variable
+- [ ] Token-aware chunking and PDF table extraction
+- [ ] Per-user API keys and auth on the frontend
+
+---
+
+<div align="center">
+
+Built by **[Harsh181507](https://github.com/Harsh181507)** — if this project helped you, consider giving it a ⭐
+
+</div>
