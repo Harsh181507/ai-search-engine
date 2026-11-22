@@ -146,12 +146,14 @@ pip install -r requirements.txt
 
 ### 3. Environment
 
-Create a `.env` file in the project root (see [Configuration](#configuration)):
+Copy the templates and fill in your keys (see [Configuration](#configuration)):
 
-```env
-GROQ_API_KEY=your_groq_api_key
-API_KEY=choose_a_secret_key
+```bash
+cp .env.example .env                    # set GROQ_API_KEY and API_KEY
+cp frontend/.env.example frontend/.env  # set VITE_API_KEY to the same API_KEY
 ```
+
+> No secrets live in the source — the backend, frontend, tests and scripts all read the key from these files.
 
 ### 4. Redis
 
@@ -172,7 +174,6 @@ Interactive API docs: **http://localhost:8000/docs**
 ```bash
 cd frontend
 npm install
-echo VITE_API_KEY=choose_a_secret_key > .env   # must match API_KEY above
 npm run dev
 ```
 

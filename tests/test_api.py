@@ -1,10 +1,14 @@
+import os
+
 import pytest
 from fastapi.testclient import TestClient
-from backend.main import app
+from backend.main import app  # also loads .env
 
 client = TestClient(app)
 
-API_KEY = "Shubh@2005"
+API_KEY = os.getenv("API_KEY")
+if not API_KEY:
+    pytest.exit("API_KEY is not set. Add it to .env (see .env.example).", returncode=1)
 AUTH = {"X-API-Key": API_KEY}
 
 # Health Check :-

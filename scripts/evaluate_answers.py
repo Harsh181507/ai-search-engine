@@ -10,6 +10,10 @@ import urllib.request
 import urllib.error
 import urllib.parse
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 # CONSTANTS
 
@@ -242,10 +246,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--api_key",
         type=str,
-        default=os.getenv("API_KEY", "Shubh@2005"),
-        help="API key for authentication (default: reads API_KEY env var)",
+        default=os.getenv("API_KEY"),
+        help="API key for authentication (default: reads API_KEY from .env)",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.api_key:
+        parser.error("API key missing: set API_KEY in .env or pass --api_key.")
+    return args
 
 
 if __name__ == "__main__":

@@ -2,7 +2,11 @@ import { useState, useRef, useCallback, useEffect } from "react";
 
 const API_BASE = "http://localhost:8000";
 
-const API_KEY = import.meta.env.VITE_API_KEY ?? "Shubh@2005";
+const API_KEY: string = import.meta.env.VITE_API_KEY ?? "";
+
+if (!API_KEY) {
+  console.warn("VITE_API_KEY is not set. Add it to frontend/.env (see frontend/.env.example).");
+}
 
 const AUTH_HEADERS = {
   "X-API-Key": API_KEY,
